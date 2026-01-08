@@ -70,6 +70,14 @@ static const struct stat* get_cached_stat(const char* path, gboolean* ok) {
     return cached ? &cached->st : NULL;
 }
 
+static void clear_stat_cache(void) {
+    if (!stat_cache)
+        return;
+
+    g_hash_table_destroy(stat_cache);
+    stat_cache = NULL;
+}
+
 /* Helper to fetch a cached block size if available. */
 static size_t get_block_size(const char* path) {
     gboolean ok = FALSE;
@@ -429,6 +437,7 @@ int preload_readahead(preload_map_t** files, int file_count) {
     g_array_free(ranges, TRUE);
 
     wait_for_children();
+    clear_stat_cache();
 
     return processed;
 }

@@ -116,19 +116,18 @@ size_t proc_get_maps(pid_t pid, GHashTable* maps, GSet** exemaps) {
         size += length;
 
         if (maps || exemaps) {
-            gpointer orig_map;
-            preload_map_t* map;
-            gpointer value;
-
-            map = preload_map_new(file, offset, length);
+            preload_map_t probe;
+            preload_map_t* map = NULL;
 
             if (maps) {
-                if (g_hash_table_lookup_extended(maps, map, &orig_map,
-                                                 &value)) {
-                    preload_map_free(map);
-                    map = (preload_map_t*)orig_map;
-                }
+                probe.path = file;
+                probe.offset = offset;
+                probe.length = length;
+                map = g_hash_table_lookup(maps, &probe);
             }
+
+            if (!map)
+                map = preload_map_new(file, offset, length);
 
             if (exemaps) {
                 preload_exemap_t* exemap;

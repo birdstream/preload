@@ -118,6 +118,30 @@ static void exe_zero_prob(gpointer G_GNUC_UNUSED key, preload_exe_t* exe) {
     exe->lnprob = 0;
 }
 
+static void lru_exe_prob(gpointer G_GNUC_UNUSED key, preload_exe_t* exe) {
+    double age_cycles;
+    int age_seconds;
+
+    if (exe_is_running(exe) || exe->running_timestamp < 0) {
+        exe->lnprob = 0;
+        return;
+    }
+
+    age_seconds = state->time - exe->running_timestamp;
+    if (age_seconds <= 0) {
+        exe->lnprob = 0;
+        return;
+    }
+
+    if (conf->model.cycle <= 0) {
+        exe->lnprob = 0;
+        return;
+    }
+
+    age_cycles = (double)age_seconds / (double)conf->model.cycle;
+    exe->lnprob = log((age_cycles + 1.0) / (age_cycles + 2.0));
+}
+
 /* Computes the P(M needed in next period | current state)
  * and bids in for the M, where M is the map used by exemap.
  *
@@ -212,8 +236,13 @@ void preload_prophet_predict(gpointer data) {
     g_ptr_array_foreach(state->maps_arr, (GFunc)G_CALLBACK(map_zero_prob),
                         data);
 
-    /* markovs bid in exes */
-    preload_markov_foreach((GFunc)G_CALLBACK(markov_bid_in_exes), data);
+    if (conf->model.predictor == PREDICT_LRU) {
+        g_hash_table_foreach(state->exes, (GHFunc)G_CALLBACK(lru_exe_prob),
+                             data);
+    } else {
+        /* markovs bid in exes */
+        preload_markov_foreach((GFunc)G_CALLBACK(markov_bid_in_exes), data);
+    }
 
     if (preload_log_level >= 9)
         g_hash_table_foreach(state->exes, (GHFunc)G_CALLBACK(exe_prob_print),

@@ -23,6 +23,10 @@ typedef struct _preload_conf_t {
     struct _conf_model {
         int cycle;
         gboolean usecorrelation;
+        enum {
+            PREDICT_MARKOV = 0,
+            PREDICT_LRU = 1
+        } predictor;
 
         int minsize;
 

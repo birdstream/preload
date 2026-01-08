@@ -24,6 +24,16 @@ cycle = @DEFAULT_CYCLE@
 # default: @DEFAULT_USECORRELATION@
 usecorrelation = @DEFAULT_USECORRELATION@
 
+# predictor:
+#
+# Prediction strategy to use. Options are:
+#
+#   0 -- PREDICT_MARKOV: Markov-chain-based prediction (default).
+#   1 -- PREDICT_LRU:    LRU-style recency heuristic.
+#
+# default: @DEFAULT_PREDICTOR@
+predictor = @DEFAULT_PREDICTOR@
+
 # minsize:
 #
 # Minimum sum of the length of maps of the process for

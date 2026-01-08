@@ -1,5 +1,6 @@
 confkey(model, integer, cycle, 20, seconds);
 confkey(model, boolean, usecorrelation, true, -);
+confkey(model, enum, predictor, 0, -);
 confkey(model, integer, minsize, 2000000, bytes);
 confkey(model, integer, memtotal, -10, signed_integer_percent);
 confkey(model, integer, memfree, 50, signed_integer_percent);

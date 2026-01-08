@@ -173,6 +173,12 @@ static int map_block_compare(const preload_map_t** pa,
 
 static int procs = 0;
 
+typedef struct {
+    const char* path;
+    size_t offset;
+    size_t length;
+} PreloadRange;
+
 static void wait_for_slot(int maxprocs) {
     int status;
 
@@ -195,8 +201,22 @@ static void wait_for_children(void) {
     }
 }
 
-static void process_file(const char* path, size_t offset, size_t length) {
+static void readahead_range(const char* path, size_t offset, size_t length) {
     int fd = -1;
+
+    fd = open(path, O_RDONLY | O_NOCTTY
+#ifdef O_NOATIME
+                        | O_NOATIME
+#endif
+    );
+    if (fd >= 0) {
+        readahead(fd, offset, length);
+
+        close(fd);
+    }
+}
+
+static void process_range(const char* path, size_t offset, size_t length) {
     int maxprocs = conf->system.maxprocs;
 
     if (maxprocs > 0 && procs >= maxprocs)
@@ -204,7 +224,6 @@ static void process_file(const char* path, size_t offset, size_t length) {
 
     if (maxprocs > 0) {
         /* parallel reading */
-
         int status = fork();
 
         if (status == -1) {
@@ -219,15 +238,96 @@ static void process_file(const char* path, size_t offset, size_t length) {
         }
     }
 
-    fd = open(path, O_RDONLY | O_NOCTTY
-#ifdef O_NOATIME
-                        | O_NOATIME
-#endif
-    );
-    if (fd >= 0) {
-        readahead(fd, offset, length);
+    readahead_range(path, offset, length);
 
-        close(fd);
+    if (maxprocs > 0) {
+        /* we're in a child process, exit */
+        exit(0);
+    }
+}
+
+static void append_range(GArray* ranges,
+                         const char* path,
+                         size_t offset,
+                         size_t length) {
+    PreloadRange range;
+
+    range.path = path;
+    range.offset = offset;
+    range.length = length;
+    g_array_append_val(ranges, range);
+}
+
+static void build_ranges(preload_map_t** files,
+                         int start,
+                         int end,
+                         GArray* ranges) {
+    int i;
+    const char* path = NULL;
+    size_t offset = 0;
+    size_t length = 0;
+    size_t merge_gap = 0;
+
+    for (i = start; i < end; i++) {
+        if (path && 0 == strcmp(path, files[i]->path)) {
+            size_t curr_end = offset + length;
+            size_t gap =
+                files[i]->offset > curr_end ? files[i]->offset - curr_end : 0;
+
+            if (gap <= merge_gap) {
+                size_t new_end = files[i]->offset + files[i]->length;
+                if (new_end > curr_end)
+                    length = new_end - offset;
+                continue;
+            }
+        }
+
+        if (path) {
+            append_range(ranges, path, offset, length);
+            path = NULL;
+        }
+
+        path = files[i]->path;
+        offset = files[i]->offset;
+        length = files[i]->length;
+        merge_gap = get_block_size(path);
+        if (merge_gap == 0)
+            merge_gap = (size_t)sysconf(_SC_PAGESIZE);
+    }
+
+    if (path)
+        append_range(ranges, path, offset, length);
+}
+
+static void process_ranges(GArray* ranges) {
+    guint i;
+    int maxprocs = conf->system.maxprocs;
+
+    if (ranges->len == 0)
+        return;
+
+    if (maxprocs > 0 && procs >= maxprocs)
+        wait_for_slot(maxprocs);
+
+    if (maxprocs > 0) {
+        /* parallel reading */
+        int status = fork();
+
+        if (status == -1) {
+            /* ignore error, return */
+            return;
+        }
+
+        /* return immediately in the parent */
+        if (status > 0) {
+            procs++;
+            return;
+        }
+    }
+
+    for (i = 0; i < ranges->len; i++) {
+        PreloadRange* range = &g_array_index(ranges, PreloadRange, i);
+        readahead_range(range->path, range->offset, range->length);
     }
 
     if (maxprocs > 0) {
@@ -292,49 +392,41 @@ static void sort_files(preload_map_t** files, int file_count) {
 
 int preload_readahead(preload_map_t** files, int file_count) {
     int i;
-    const char* path = NULL;
-    size_t offset = 0, length = 0;
-    size_t merge_gap = 0;
     int processed = 0;
+    int group_start = 0;
+    GArray* ranges = NULL;
 
     sort_files(files, file_count);
-    for (i = 0; i < file_count; i++) {
-        if (path && 0 == strcmp(path, files[i]->path)) {
-            size_t end = offset + length;
-            size_t gap = files[i]->offset > end ? files[i]->offset - end : 0;
-
-            if (gap <= merge_gap) {
-                /* merge requests across small gaps or overlaps */
-                size_t new_end = files[i]->offset + files[i]->length;
-                if (new_end > end)
-                    length = new_end - offset;
-                continue;
+    ranges = g_array_new(FALSE, FALSE, sizeof(PreloadRange));
+    if (conf->system.sortstrategy == SORT_BLOCK) {
+        /* Batch ranges per block to reduce fork/syscall overhead on fragmented
+         * layouts while keeping block order. */
+        for (i = 0; i < file_count; i++) {
+            if (i > group_start &&
+                files[i]->block != files[group_start]->block) {
+                build_ranges(files, group_start, i, ranges);
+                processed += ranges->len;
+                process_ranges(ranges);
+                g_array_set_size(ranges, 0);
+                group_start = i;
             }
         }
 
-        if (path) {
-            process_file(path, offset, length);
-            processed++;
-            path = NULL;
+        if (file_count > 0) {
+            build_ranges(files, group_start, file_count, ranges);
+            processed += ranges->len;
+            process_ranges(ranges);
         }
-
-        path = files[i]->path;
-        offset = files[i]->offset;
-        length = files[i]->length;
-        /* Use the filesystem block size (or page size) to decide how aggressively
-         * we coalesce adjacent ranges for a path. Aligning the gap threshold to
-         * the block size avoids issuing redundant readahead calls on segments
-         * that would map to the same set of pages anyway. */
-        merge_gap = get_block_size(path);
-        if (merge_gap == 0)
-            merge_gap = (size_t)sysconf(_SC_PAGESIZE);
+    } else {
+        build_ranges(files, 0, file_count, ranges);
+        processed += ranges->len;
+        for (i = 0; i < (int)ranges->len; i++) {
+            PreloadRange* range = &g_array_index(ranges, PreloadRange, i);
+            process_range(range->path, range->offset, range->length);
+        }
     }
 
-    if (path) {
-        process_file(path, offset, length);
-        processed++;
-        path = NULL;
-    }
+    g_array_free(ranges, TRUE);
 
     wait_for_children();
 

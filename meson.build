@@ -64,6 +64,7 @@ configure_file(
 conf_data = configuration_data({
   'DEFAULT_CYCLE': 1,
   'DEFAULT_USECORRELATION' : 'true',
+  'DEFAULT_PREDICTOR' : 0,
   'DEFAULT_MINSIZE': 2000000,
   'DEFAULT_MEMTOTAL' : -10,
   'DEFAULT_MEMFREE' : 50,
